@@ -95,6 +95,7 @@ const TransactionsView = {
     const form = document.getElementById('form-txn');
     form.reset();
     form.id.value = '';
+    delete form.dataset.requestId; // a new form gets a new ticket
     form.date.disabled = false;
     form.querySelectorAll('input[name=type]').forEach((r) => { r.disabled = false; });
     form.date.value = UI.today();
@@ -112,20 +113,27 @@ const TransactionsView = {
     if (!(Number(d.amount) > 0)) { UI.toast('Enter an amount greater than 0.', true); return; }
     const body = { amount: Number(d.amount), currency: d.currency, paymentMethod: d.paymentMethod, note: d.note };
     if (type === 'expense') body.bucketId = d.bucketId;
+    // Double-submit protection (enhancement C): one ticket per filled-in form, kept for retries,
+    // and the Save button is disabled while the request is running
+    if (!d.id && !form.dataset.requestId) form.dataset.requestId = crypto.randomUUID();
+    const button = form.querySelector('button[type=submit]');
+    if (button.disabled) return;
+    button.disabled = true;
     try {
       let res;
       if (d.id) {
         res = await Api.patch(`/api/transactions/${d.id}`, body);
       } else {
-        res = await Api.post('/api/transactions', { ...body, type, date: d.date });
+        res = await Api.post('/api/transactions', { ...body, type, date: d.date, clientRequestId: form.dataset.requestId });
       }
+      if (res.duplicate) { UI.toast('This transaction was already saved.'); this.resetForm(); this.load(); return; }
       out.textContent = res.budget
         ? `"${res.transaction.bucketName}": ${UI.money(res.budget.spent)} of ${UI.money(res.budget.effectiveLimit)} used (${UI.pct(res.budget.percentUsed)}) · ${UI.stateLabel[res.budget.state]}`
         : '';
       UI.toast(res.alertRaised ? 'Saved, and a budget alert was raised.' : 'Saved.', res.alertRaised);
       this.resetForm();
       this.load();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { UI.fail(e); } finally { button.disabled = false; }
   },
 
   // ----- Receipts (enhancement 5e, Salma) -----

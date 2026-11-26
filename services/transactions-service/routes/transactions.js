@@ -16,6 +16,7 @@ const {
 const fx = require('../lib/fx');
 const receipts = require('../lib/receipts');
 const privacy = require('../lib/privacy');
+const idempotency = require('../lib/idempotency');
 
 const CURRENCIES = ['EGP', 'USD', 'EUR', 'GBP', 'SAR', 'AED', 'KWD'];
 const PAYMENT_METHODS = ['cash', 'card', 'bank_transfer', 'mobile_wallet'];
@@ -30,7 +31,8 @@ const createSchema = {
   date: { type: 'string', required: true },
   bucketId: { type: 'string', pattern: ID, patternMessage: 'bucketId is not valid.' },
   paymentMethod: { type: 'string', required: true, enum: PAYMENT_METHODS },
-  note: { type: 'string', maxLength: 200 }
+  note: { type: 'string', maxLength: 200 },
+  clientRequestId: { type: 'string', pattern: idempotency.CLIENT_ID, patternMessage: 'clientRequestId is not valid.' }
 };
 const updateSchema = {
   amount: createSchema.amount,
@@ -182,13 +184,23 @@ function createTransactionRoutes(logger) {
     if (input.type === 'expense' && !input.bucketId) throw errors.badRequest('bucketId is required for an expense.');
     if (input.type === 'income' && input.bucketId) throw errors.badRequest('Income is not linked to a spending bucket.');
 
+    // Double-submit protection (enhancement C): the same clientRequestId always gives the same id
+    const id = idempotency.transactionId(date, req.user.id, input.clientRequestId);
+    const duplicateOf = async () => {
+      const first = await store.get(userPk(req), `TXN#${id}`);
+      if (!first) return false;
+      logger.info('TRANSACTION_DUPLICATE_IGNORED', { requestId: req.requestId, userId: req.user.id, transactionId: id });
+      res.status(200).json({ transaction: publicTxn(first), budget: null, alertRaised: false, duplicate: true });
+      return true;
+    };
+    if (input.clientRequestId && await duplicateOf()) return;
+
     const currency = input.currency || req.user.baseCurrency;
     const conversion = await fx.convert(input.amount, currency, req.user.baseCurrency, logger, req.requestId);
 
     let check = null;
     if (input.type === 'expense') check = await checkSpend(req, input.bucketId, conversion.amountBase, date);
 
-    const id = `${date.replace(/-/g, '')}-${crypto.randomBytes(6).toString('hex')}`;
     const now = new Date().toISOString();
     const txn = {
       pk: userPk(req), sk: `TXN#${id}`, id, userId: req.user.id, type: input.type,
@@ -197,7 +209,11 @@ function createTransactionRoutes(logger) {
       date, bucketId: input.bucketId || null, bucketName: check ? check.bucket.name : null,
       paymentMethod: input.paymentMethod, note: input.note || '', receiptKey: null, createdAt: now, updatedAt: now
     };
-    await store.put(txn);
+    // ifNotExists: if two copies arrive at the same moment, only the first one is saved
+    if (!(await store.put(txn, { ifNotExists: true }))) {
+      if (await duplicateOf()) return;
+      throw errors.conflict('TRANSACTION_EXISTS', 'This transaction was already saved.');
+    }
     logger.info('TRANSACTION_CREATED', { requestId: req.requestId, userId: req.user.id, transactionId: id, type: txn.type, foreign: currency !== txn.baseCurrency });
 
     const budget = txn.bucketId ? await evaluate(req, txn.bucketId, date) : null;
