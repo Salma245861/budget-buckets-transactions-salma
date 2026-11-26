@@ -15,6 +15,7 @@ const {
 } = require('pb-common');
 const fx = require('../lib/fx');
 const receipts = require('../lib/receipts');
+const privacy = require('../lib/privacy');
 
 const CURRENCIES = ['EGP', 'USD', 'EUR', 'GBP', 'SAR', 'AED', 'KWD'];
 const PAYMENT_METHODS = ['cash', 'card', 'bank_transfer', 'mobile_wallet'];
@@ -225,6 +226,37 @@ function createTransactionRoutes(logger) {
     totals.net = round2(totals.income - totals.expense);
     const page = items.slice(0, limit).map(publicTxn);
     res.status(200).json({ from, to, items: page, count: page.length, total: items.length, totals, baseCurrency: req.user.baseCurrency });
+  }));
+
+  // ----- Privacy rights (enhancement 5f, Salma): download my data / delete my data -----
+  // Placed before "/:id" so "me" is not read as a transaction id.
+  router.get('/me/export', wrap(async (req, res) => {
+    const items = await store.query(userPk(req), { prefix: 'TXN#' });
+    logger.info('PRIVACY_EXPORT', { requestId: req.requestId, userId: req.user.id, count: items.length });
+    res.set('Content-Disposition', 'attachment; filename="my-transactions.json"');
+    res.status(200).json({
+      service: 'transactions', exportedAt: new Date().toISOString(), userId: req.user.id,
+      baseCurrency: req.user.baseCurrency, count: items.length, transactions: privacy.exportView(items)
+    });
+  }));
+
+  router.delete('/me', wrap(async (req, res) => {
+    // Must be asked for explicitly, so a stray request cannot wipe someone's history
+    const { confirm } = validate(req.body || {}, { confirm: { type: 'boolean', required: true } });
+    if (confirm !== true) throw errors.badRequest('Send {"confirm": true} to delete all your transactions.');
+    const items = await store.query(userPk(req), { prefix: 'TXN#' });
+    let receiptsDeleted = 0;
+    let receiptsFailed = 0;
+    if (receipts.enabled()) {
+      for (const key of privacy.receiptKeysToDelete(items, req.user.id, receipts)) {
+        try { await receipts.removeObject(key); receiptsDeleted += 1; } catch (error) { receiptsFailed += 1; }
+      }
+    }
+    for (const t of items) await store.remove(t.pk, t.sk);
+    logger.info('PRIVACY_DELETE', {
+      requestId: req.requestId, userId: req.user.id, transactions: items.length, receiptsDeleted, receiptsFailed
+    });
+    res.status(200).json({ service: 'transactions', deletedTransactions: items.length, deletedReceipts: receiptsDeleted, receiptErrors: receiptsFailed });
   }));
 
   router.get('/:id', wrap(async (req, res) => {
