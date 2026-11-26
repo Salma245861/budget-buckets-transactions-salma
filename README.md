@@ -35,3 +35,6 @@ The first commit in this repository is my service as it stood in the team's **AI
 | 26 Nov 2026 | Added my service and the page layout to my `salma` branch, and opened [pull request #1](https://github.com/SagedEhab/personal-budget-buckets/pull/1) | `e6596bf` (team repo) |
 | 26 Nov 2026 | Re-applied the Windows health-check fix after the team repo was reorganised | `c60bba2` (team repo) |
 | 26 Nov 2026 | Wrote 7 unit tests for the currency converter (`tests/transactions-fx.test.js`): same currency, USD to EGP, rounding, caching, unsupported currency, API down, bad API answer. 7/7 pass | `646efb8` (team repo) |
+| 26 Nov 2026 | **Enhancement 5e, safe receipt uploads (backend):** pre-signed POST form so S3 itself refuses files over 5 MB or of another type; after upload the service reads the file's first bytes and deletes anything that is not a real JPEG, PNG or PDF (422 `RECEIPT_TYPE_MISMATCH`, logged as `RECEIPT_REJECTED`). Tests TX-08 to TX-11 | `2b75fb1`, `70ed47d` (team repo) |
+| 26 Nov 2026 | **Enhancement 5e (page):** Receipt column with Attach, Replace and View on the Transactions page | `6ee2bfc` (team repo) |
+| 26 Nov 2026 | Deployed my updated Lambda and page to Floci and tested: real PNG attached and viewable; fake PNG (a text file) refused and deleted; 6 MB file refused by S3 (400); `text/html` refused (400) | Screenshots in `evidence/` |

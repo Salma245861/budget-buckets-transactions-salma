@@ -40,7 +40,7 @@ const updateSchema = {
 };
 
 function publicTxn(t) {
-  const { pk, sk, receiptKey, ...rest } = t;
+  const { pk, sk, receiptKey, receiptPendingType, ...rest } = t;
   return { ...rest, hasReceipt: Boolean(receiptKey) };
 }
 
@@ -280,7 +280,9 @@ function createTransactionRoutes(logger) {
     res.status(204).end();
   }));
 
-  // 5. Receipts: pre-signed S3 URLs
+  // 5. Receipts: safe uploads (enhancement 5e, Salma)
+  //    Step 1: the browser asks for an upload form. S3 itself will refuse files over 5 MB
+  //            or with a different Content-Type than the one declared here.
   router.post('/:id/receipt', wrap(async (req, res) => {
     const txn = await loadTxn(req, req.params.id);
     const { contentType } = validate(req.body, { contentType: { type: 'string', required: true, enum: RECEIPT_TYPES } });
@@ -290,10 +292,49 @@ function createTransactionRoutes(logger) {
       throw e;
     }
     const key = receipts.keyFor(req.user.id, txn.id);
-    const url = await receipts.uploadUrl(key, contentType);
-    await store.update(txn.pk, txn.sk, { receiptKey: key, receiptContentType: contentType, updatedAt: new Date().toISOString() });
-    logger.info('RECEIPT_UPLOAD_URL_ISSUED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id });
-    res.status(201).json({ uploadUrl: url, method: 'PUT', contentType, expiresIn: receipts.URL_TTL_SEC });
+    const form = await receipts.uploadForm(key, contentType);
+    // Not attached until the file has been checked (step 2)
+    await store.update(txn.pk, txn.sk, { receiptKey: null, receiptPendingType: contentType, updatedAt: new Date().toISOString() });
+    logger.info('RECEIPT_UPLOAD_FORM_ISSUED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id });
+    res.status(201).json({
+      uploadUrl: form.url, method: 'POST', fields: form.fields, contentType,
+      maxBytes: receipts.MAX_BYTES, expiresIn: receipts.URL_TTL_SEC
+    });
+  }));
+
+  //    Step 2: after uploading, the browser asks the service to check the file.
+  //            The first bytes must really be the declared type, otherwise the file is deleted.
+  router.post('/:id/receipt/confirm', wrap(async (req, res) => {
+    const txn = await loadTxn(req, req.params.id);
+    if (!txn.receiptPendingType) throw errors.conflict('NO_RECEIPT_UPLOAD', 'Ask for an upload form before confirming a receipt.');
+    if (!receipts.enabled()) throw errors.unavailable('RECEIPTS_NOT_CONFIGURED', 'Receipt storage (S3) is not configured.');
+    const key = receipts.keyFor(req.user.id, txn.id);
+    let bytes;
+    try {
+      bytes = await receipts.readStart(key);
+    } catch (error) {
+      if (error.name === 'NoSuchKey' || (error.$metadata && error.$metadata.httpStatusCode === 404)) {
+        throw errors.badRequest('The receipt file was not uploaded.');
+      }
+      throw error;
+    }
+    const realType = receipts.sniffType(bytes);
+    if (realType !== txn.receiptPendingType) {
+      try { await receipts.removeObject(key); } catch (error) {
+        logger.warn('RECEIPT_DELETE_FAILED', { requestId: req.requestId, transactionId: txn.id });
+      }
+      await store.update(txn.pk, txn.sk, { receiptKey: null, receiptPendingType: null, updatedAt: new Date().toISOString() });
+      logger.warn('RECEIPT_REJECTED', {
+        requestId: req.requestId, userId: req.user.id, transactionId: txn.id,
+        declared: txn.receiptPendingType, detected: realType || 'unknown'
+      });
+      throw errors.unprocessable('RECEIPT_TYPE_MISMATCH', 'This file is not a real JPEG, PNG or PDF, so it was deleted.');
+    }
+    const updated = await store.update(txn.pk, txn.sk, {
+      receiptKey: key, receiptContentType: realType, receiptPendingType: null, updatedAt: new Date().toISOString()
+    });
+    logger.info('RECEIPT_ATTACHED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id, type: realType });
+    res.status(200).json(publicTxn(updated));
   }));
 
   router.get('/:id/receipt', wrap(async (req, res) => {

@@ -50,7 +50,7 @@ const TransactionsView = {
     try {
       const data = await Api.get('/api/transactions', q);
       const body = UI.clear(document.querySelector('#txn-table tbody'));
-      if (!data.items.length) body.append(UI.el('tr', {}, UI.el('td', { colspan: 7, class: 'muted', text: 'No transactions in this range.' })));
+      if (!data.items.length) body.append(UI.el('tr', {}, UI.el('td', { colspan: 8, class: 'muted', text: 'No transactions in this range.' })));
       for (const t of data.items) {
         const amount = t.currency !== t.baseCurrency
           ? `${UI.money(t.amount, t.currency)} → ${UI.money(t.amountBase, t.baseCurrency)}`
@@ -62,6 +62,9 @@ const TransactionsView = {
           UI.el('td', { text: t.bucketName || '-' }),
           UI.el('td', { text: t.paymentMethod.replace('_', ' ') }),
           UI.el('td', { text: t.note }),
+          UI.el('td', {},
+            t.hasReceipt ? UI.el('button', { class: 'link', text: 'View', onclick: () => this.viewReceipt(t) }) : null,
+            UI.el('button', { class: 'link', text: t.hasReceipt ? 'Replace' : 'Attach', onclick: () => this.pickReceipt(t) })),
           UI.el('td', {},
             UI.el('button', { class: 'link', text: 'Edit', onclick: () => this.edit(t) }),
             UI.el('button', { class: 'link danger', text: 'Delete', onclick: () => this.remove(t) }))));
@@ -122,6 +125,48 @@ const TransactionsView = {
       UI.toast(res.alertRaised ? 'Saved, and a budget alert was raised.' : 'Saved.', res.alertRaised);
       this.resetForm();
       this.load();
+    } catch (e) { UI.fail(e); }
+  },
+
+  // ----- Receipts (enhancement 5e, Salma) -----
+  // The browser checks are only for a quick, friendly message. The real protection is on the
+  // server: S3 refuses files over 5 MB or of another type, and the service checks the file's
+  // first bytes before attaching it.
+  receiptTypes: ['image/jpeg', 'image/png', 'application/pdf'],
+  receiptMaxBytes: 5 * 1024 * 1024,
+
+  pickReceipt(t) {
+    const input = UI.el('input', { type: 'file', accept: this.receiptTypes.join(',') });
+    input.addEventListener('change', () => { if (input.files[0]) this.uploadReceipt(t, input.files[0]); });
+    input.click();
+  },
+
+  async uploadReceipt(t, file) {
+    if (!this.receiptTypes.includes(file.type)) { UI.toast('Receipts must be a JPEG, PNG or PDF file.', true); return; }
+    if (file.size > this.receiptMaxBytes) { UI.toast('Receipts can be at most 5 MB.', true); return; }
+    try {
+      // 1. Ask the service for an upload form (S3 will enforce the size and type)
+      const form = await Api.post(`/api/transactions/${t.id}/receipt`, { contentType: file.type });
+      // 2. Send the file straight to the private S3 bucket
+      const data = new FormData();
+      for (const [k, v] of Object.entries(form.fields)) data.append(k, v);
+      data.append('file', file);
+      const up = await fetch(form.uploadUrl, { method: 'POST', body: data });
+      if (!up.ok) {
+        UI.toast(up.status === 400 ? 'The storage refused the file (too large).' : 'The storage refused the file.', true);
+        return;
+      }
+      // 3. Ask the service to check the file and attach it
+      await Api.post(`/api/transactions/${t.id}/receipt/confirm`);
+      UI.toast('Receipt attached.');
+      this.load();
+    } catch (e) { UI.fail(e); this.load(); }
+  },
+
+  async viewReceipt(t) {
+    try {
+      const r = await Api.get(`/api/transactions/${t.id}/receipt`);
+      window.open(r.downloadUrl, '_blank', 'noopener');
     } catch (e) { UI.fail(e); }
   },
 
