@@ -27,6 +27,10 @@ function getClients() {
 }
 
 const enabled = () => Boolean(process.env.RECEIPTS_BUCKET);
+// Customer-managed KMS key (enhancement A). Asked for explicitly on every write, so files are
+// encrypted with our key even where the bucket default is not applied (Floci).
+const kmsKey = () => process.env.RECEIPTS_KMS_KEY || null;
+const kmsParams = () => (kmsKey() ? { ServerSideEncryption: 'aws:kms', SSEKMSKeyId: kmsKey() } : {});
 const keyFor = (userId, txnId) => `receipts/${userId}/${txnId}`;
 // New uploads land here first, so a rejected file never replaces a good receipt
 const pendingKeyFor = (userId, txnId) => `${keyFor(userId, txnId)}.pending`;
@@ -36,7 +40,8 @@ async function promote(pendingKey, finalKey) {
   const { CopyObjectCommand } = require('@aws-sdk/client-s3');
   const Bucket = process.env.RECEIPTS_BUCKET;
   await getClients().s3.send(new CopyObjectCommand({
-    Bucket, Key: finalKey, CopySource: `${Bucket}/${pendingKey.split('/').map(encodeURIComponent).join('/')}`
+    Bucket, Key: finalKey, CopySource: `${Bucket}/${pendingKey.split('/').map(encodeURIComponent).join('/')}`,
+    ...kmsParams()
   }));
   await removeObject(pendingKey);
 }
@@ -44,15 +49,19 @@ async function promote(pendingKey, finalKey) {
 // A pre-signed POST form: S3 enforces the size range and the content type itself.
 async function uploadForm(key, contentType) {
   const { createPresignedPost } = require('@aws-sdk/s3-presigned-post');
+  const Conditions = [
+    ['content-length-range', 1, MAX_BYTES],
+    ['eq', '$Content-Type', contentType]
+  ];
+  const Fields = { 'Content-Type': contentType };
+  if (kmsKey()) {
+    Fields['x-amz-server-side-encryption'] = 'aws:kms';
+    Fields['x-amz-server-side-encryption-aws-kms-key-id'] = kmsKey();
+    Conditions.push(['eq', '$x-amz-server-side-encryption', 'aws:kms']);
+    Conditions.push(['eq', '$x-amz-server-side-encryption-aws-kms-key-id', kmsKey()]);
+  }
   const { url, fields } = await createPresignedPost(getClients().signer, {
-    Bucket: process.env.RECEIPTS_BUCKET,
-    Key: key,
-    Conditions: [
-      ['content-length-range', 1, MAX_BYTES],
-      ['eq', '$Content-Type', contentType]
-    ],
-    Fields: { 'Content-Type': contentType },
-    Expires: URL_TTL_SEC
+    Bucket: process.env.RECEIPTS_BUCKET, Key: key, Conditions, Fields, Expires: URL_TTL_SEC
   });
   return { url, fields };
 }
@@ -89,4 +98,4 @@ async function removeObject(key) {
   await getClients().s3.send(new DeleteObjectCommand({ Bucket: process.env.RECEIPTS_BUCKET, Key: key }));
 }
 
-module.exports = { enabled, keyFor, pendingKeyFor, promote, uploadForm, sniffType, readStart, downloadUrl, removeObject, URL_TTL_SEC, MAX_BYTES, TYPES };
+module.exports = { enabled, kmsKey, keyFor, pendingKeyFor, promote, uploadForm, sniffType, readStart, downloadUrl, removeObject, URL_TTL_SEC, MAX_BYTES, TYPES };

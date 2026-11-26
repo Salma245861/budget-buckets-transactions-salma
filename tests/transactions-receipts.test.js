@@ -52,6 +52,20 @@ test('TX-11 each user\'s receipts live under their own folder in S3', () => {
   assert.notEqual(receipts.keyFor('user-a', 'txn-1'), receipts.keyFor('user-b', 'txn-1'));
 });
 
+test('TX-16 with a KMS key configured, every upload must be encrypted with that key', async () => {
+  const key = 'arn:aws:kms:us-east-1:000000000000:key/test-key';
+  process.env.RECEIPTS_KMS_KEY = key;
+  try {
+    const form = await receipts.uploadForm('receipts/u1/t1.pending', 'image/jpeg');
+    assert.equal(form.fields['x-amz-server-side-encryption'], 'aws:kms');
+    assert.equal(form.fields['x-amz-server-side-encryption-aws-kms-key-id'], key);
+    const policy = JSON.parse(Buffer.from(form.fields.Policy, 'base64').toString());
+    assert.ok(policy.conditions.some((c) => Array.isArray(c) && c[1] === '$x-amz-server-side-encryption-aws-kms-key-id' && c[2] === key));
+  } finally {
+    delete process.env.RECEIPTS_KMS_KEY;
+  }
+});
+
 test('TX-12 new uploads wait in their own spot, so a rejected file cannot replace a good receipt', () => {
   assert.equal(receipts.pendingKeyFor('user-a', 'txn-1'), 'receipts/user-a/txn-1.pending');
   assert.notEqual(receipts.pendingKeyFor('user-a', 'txn-1'), receipts.keyFor('user-a', 'txn-1'));
