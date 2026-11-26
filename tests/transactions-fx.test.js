@@ -1,5 +1,5 @@
 // Unit tests for the Transactions service's currency converter (services/transactions-service/lib/fx.js).
-// Owner: Salma. Test IDs: TX-01 ... TX-07.
+// Owner: Salma. Test IDs: TX-01 ... TX-07, and TX-20 ... TX-22 for the shared cache (enhancement B).
 // The real exchange-rate website is replaced by a fake one, so these tests need no internet
 // and always give the same result.
 // Run: node --test tests/transactions-fx.test.js
@@ -65,6 +65,55 @@ test('TX-06 API down: a clear 503 error, nothing converted', async () => {
   fakeApi(new Error('network unreachable'));
   await assert.rejects(fx.convert(3, 'KWD', 'EGP', logger, 'req-6'),
     { status: 503, code: 'FX_UNAVAILABLE' });
+});
+
+// ----- Shared cache (enhancement B): a fake DynamoDB table shared by "two Lambda copies" -----
+function fakeTable({ broken = false } = {}) {
+  const rows = new Map();
+  return {
+    rows,
+    async get(pk, sk) { if (broken) throw new Error('DynamoDB down'); return rows.get(`${pk}|${sk}`) || null; },
+    async put(item) { if (broken) throw new Error('DynamoDB down'); rows.set(`${item.pk}|${item.sk}`, { ...item }); return true; }
+  };
+}
+
+test('TX-20 a second Lambda copy gets the rate from the shared cache, with no API call', async () => {
+  const table = fakeTable();
+  fx.useSharedCache(table);
+  try {
+    fakeApi({ result: 'success', rates: { EGP: 49 } });
+    await fx.convert(1, 'USD', 'EGP', logger, 'copy-1');  // copy 1: asks the API, fills the shared cache
+    assert.equal(calls, 1);
+    assert.ok(table.rows.has('FXCACHE#shared|RATES#USD'));
+    fx.clearFxCache();                                     // copy 2 starts with an empty memory
+    const r = await fx.convert(2, 'USD', 'EGP', logger, 'copy-2');
+    assert.equal(r.amountBase, 98);
+    assert.equal(calls, 1, 'the API was not called again');
+  } finally { fx.useSharedCache(null); }
+});
+
+test('TX-21 a shared rate older than 1 hour is not used: the API is asked again', async () => {
+  const table = fakeTable();
+  table.rows.set('FXCACHE#shared|RATES#USD', {
+    pk: 'FXCACHE#shared', sk: 'RATES#USD', at: Date.now() - 2 * 60 * 60 * 1000, rates: { EGP: 30 }, provider: 'open.er-api.com'
+  });
+  fx.useSharedCache(table);
+  try {
+    fakeApi({ result: 'success', rates: { EGP: 50 } });
+    const r = await fx.convert(1, 'USD', 'EGP', logger, 'req-21');
+    assert.equal(r.rate, 50);
+    assert.equal(calls, 1);
+    assert.equal(table.rows.get('FXCACHE#shared|RATES#USD').rates.EGP, 50, 'the shared cache was refreshed');
+  } finally { fx.useSharedCache(null); }
+});
+
+test('TX-22 if the shared cache is down, conversion still works through the API', async () => {
+  fx.useSharedCache(fakeTable({ broken: true }));
+  try {
+    fakeApi({ result: 'success', rates: { EGP: 48 } });
+    const r = await fx.convert(10, 'USD', 'EGP', logger, 'req-22');
+    assert.equal(r.amountBase, 480);
+  } finally { fx.useSharedCache(null); }
 });
 
 test('TX-07 a strange answer from the API is refused with 503', async () => {

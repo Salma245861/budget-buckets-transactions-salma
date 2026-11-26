@@ -52,6 +52,7 @@ const skRange = (from, to) => [`TXN#${from.replace(/-/g, '')}`, `TXN#${to.replac
 
 function createTransactionRoutes(logger) {
   const store = createStore('TRANSACTIONS_TABLE');
+  fx.useSharedCache(store); // enhancement B: one shared exchange-rate cache for all Lambda copies
   const { requireAuth, requireRole } = createAuth(logger);
   const router = express.Router();
   router.use(requireAuth);
