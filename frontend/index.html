@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://localhost:3000 http://*.localhost.floci.io:4566 http://localhost:4566 https://*.amazonaws.com;">
+  <title>Personal Budget Buckets</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>Personal Budget Buckets</div>
+    <nav id="nav" class="nav hidden" aria-label="Main">
+      <button data-view="dashboard" class="active">Dashboard</button>
+      <button data-view="buckets">Buckets</button>
+      <button data-view="transactions">Transactions</button>
+      <button data-view="reports">Reports</button>
+      <button data-view="admin" class="admin-only hidden">Admin</button>
+    </nav>
+    <div id="session" class="session hidden">
+      <span id="who"></span>
+      <button id="logout" class="link">Log out</button>
+    </div>
+  </header>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Login / register (shared auth) -->
+  <main id="view-auth" class="view auth-view">
+    <section class="card auth-card">
+      <h1>Know where your money goes</h1>
+      <p class="muted">Split your spending into buckets, set monthly budgets and get warned before you overspend.</p>
+      <div class="tabs" role="tablist">
+        <button id="tab-login" class="active" role="tab">Log in</button>
+        <button id="tab-register" role="tab">Create account</button>
+      </div>
+      <form id="form-login" novalidate>
+        <label>E-mail <input name="email" type="email" autocomplete="username" required maxlength="120"></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+        <button class="primary" type="submit">Log in</button>
+      </form>
+      <form id="form-register" class="hidden" novalidate>
+        <label>Name <input name="name" required minlength="2" maxlength="60"></label>
+        <label>E-mail <input name="email" type="email" autocomplete="username" required maxlength="120"></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="128">
+          <small class="muted">At least 10 characters with a letter and a digit.</small></label>
+        <label>Base currency
+          <select name="baseCurrency"><option>EGP</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>AED</option><option>KWD</option></select>
+        </label>
+        <button class="primary" type="submit">Create account</button>
+      </form>
+      <p id="auth-error" class="error" role="alert"></p>
+      <p class="muted small" id="api-status"></p>
+    </section>
+  </main>
+
+  <!-- Dashboard (Insights service) -->
+  <main id="view-dashboard" class="view hidden">
+    <div class="view-head">
+      <h2>Dashboard</h2>
+      <label class="inline">Month <input id="dash-month" type="month"></label>
+    </div>
+    <div class="kpis" id="dash-kpis"></div>
+    <div class="grid2">
+      <section class="card"><h3>Spending this month (cumulative)</h3><canvas id="chart-daily" width="560" height="220" aria-label="Cumulative spending chart"></canvas></section>
+      <section class="card"><h3>Where the money went</h3><canvas id="chart-buckets" width="560" height="220" aria-label="Spending by bucket chart"></canvas></section>
+    </div>
+    <div class="grid2">
+      <section class="card"><h3>Budget health</h3><div id="dash-health"></div></section>
+      <section class="card"><h3>Six-month trend</h3><canvas id="chart-trend" width="560" height="200" aria-label="Six month trend chart"></canvas><p id="trend-text" class="muted"></p></section>
+    </div>
+  </main>
+
+  <!-- Buckets & Budgets service -->
+  <main id="view-buckets" class="view hidden">
+    <div class="view-head">
+      <h2>Buckets &amp; budgets</h2>
+      <label class="inline">Month <input id="bucket-month" type="month"></label>
+    </div>
+    <div id="alerts-box"></div>
+    <div class="grid2 wide-left">
+      <section class="card"><div id="bucket-list" class="bucket-list"></div><p id="bucket-totals" class="muted"></p></section>
+      <aside>
+        <section class="card">
+          <h3 id="bucket-form-title">New bucket</h3>
+          <form id="form-bucket" novalidate>
+            <input type="hidden" name="id">
+            <label>From template <select name="templateId"><option value="">None</option></select></label>
+            <label>Name <input name="name" required minlength="2" maxlength="40"></label>
+            <label>Monthly budget <input name="monthlyLimit" type="number" min="0" step="0.01" required></label>
+            <label>Alert at (% used) <input name="alertThreshold" type="number" min="50" max="100" value="80"></label>
+            <label class="check"><input type="checkbox" name="rollover"> Roll unused budget into next month</label>
+            <label class="check"><input type="checkbox" name="hardLimit"> Hard limit (block expenses over budget)</label>
+            <label>Colour <input name="color" type="color" value="#2E7D6B"></label>
+            <div class="row"><button class="primary" type="submit">Save bucket</button><button type="button" id="bucket-cancel" class="link hidden">Cancel edit</button></div>
+          </form>
+        </section>
+        <section class="card">
+          <h3>Move budget between buckets</h3>
+          <form id="form-transfer" novalidate>
+            <label>From <select name="fromBucketId"></select></label>
+            <label>To <select name="toBucketId"></select></label>
+            <label>Amount <input name="amount" type="number" min="0.01" step="0.01" required></label>
+            <label>Note <input name="note" maxlength="120"></label>
+            <button class="primary" type="submit">Move budget</button>
+          </form>
+          <ul id="transfer-list" class="plain small"></ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <!-- Transactions service -->
+  <main id="view-transactions" class="view hidden">
+    <div class="view-head"><h2>Transactions</h2></div>
+    <div class="grid2 wide-left">
+      <section class="card">
+        <form id="form-filter" class="filters" novalidate>
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <label>Type <select name="type"><option value="">All</option><option value="expense">Expense</option><option value="income">Income</option></select></label>
+          <label>Bucket <select name="bucketId"><option value="">All</option></select></label>
+          <label>Payment <select name="paymentMethod"><option value="">All</option><option value="cash">Cash</option><option value="card">Card</option><option value="bank_transfer">Bank transfer</option><option value="mobile_wallet">Mobile wallet</option></select></label>
+          <label>Search note <input name="q" maxlength="50"></label>
+          <button class="primary" type="submit">Filter</button>
+        </form>
+        <p id="txn-totals" class="muted"></p>
+        <div class="table-wrap"><table id="txn-table"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Bucket</th><th>Payment</th><th>Note</th><th>Receipt</th><th></th></tr></thead><tbody></tbody></table></div>
+      </section>
+      <aside class="card">
+        <h3 id="txn-form-title">Log a transaction</h3>
+        <form id="form-txn" novalidate>
+          <input type="hidden" name="id">
+          <div class="seg"><label><input type="radio" name="type" value="expense" checked> Expense</label><label><input type="radio" name="type" value="income"> Income</label></div>
+          <div class="row">
+            <label>Amount <input name="amount" type="number" min="0.01" step="0.01" required></label>
+            <label>Currency <select name="currency"><option>EGP</option><option>USD</option><option>EUR</option><option>GBP</option><option>SAR</option><option>AED</option><option>KWD</option></select></label>
+          </div>
+          <p id="fx-preview" class="muted small"></p>
+          <label>Date <input name="date" type="date" required></label>
+          <label class="expense-only">Bucket <select name="bucketId"></select></label>
+          <label>Payment method <select name="paymentMethod"><option value="card">Card</option><option value="cash">Cash</option><option value="bank_transfer">Bank transfer</option><option value="mobile_wallet">Mobile wallet</option></select></label>
+          <label>Note <input name="note" maxlength="200"></label>
+          <div class="row"><button class="primary" type="submit">Save</button><button type="button" id="txn-cancel" class="link hidden">Cancel edit</button></div>
+        </form>
+        <p id="txn-budget" class="small"></p>
+      </aside>
+    </div>
+  </main>
+
+  <!-- Insights & Reports service -->
+  <main id="view-reports" class="view hidden">
+    <div class="view-head"><h2>Reports</h2></div>
+    <div class="grid2">
+      <section class="card">
+        <h3>Generate a CSV report</h3>
+        <form id="form-report" novalidate>
+          <label>Report <select name="type"><option value="transactions">Transactions in a date range</option><option value="budget">Budget status for a month</option></select></label>
+          <div class="row range"><label>From <input name="from" type="date"></label><label>To <input name="to" type="date"></label></div>
+          <label class="month hidden">Month <input name="month" type="month"></label>
+          <button class="primary" type="submit">Generate</button>
+        </form>
+      </section>
+      <section class="card"><h3>Your reports</h3><ul id="report-list" class="plain"></ul></section>
+    </div>
+  </main>
+
+  <!-- Admin (role "admin" only: enforced by the backend, this view is just convenience) -->
+  <main id="view-admin" class="view hidden">
+    <div class="view-head"><h2>Administration</h2></div>
+    <div class="kpis" id="admin-kpis"></div>
+    <div class="grid2">
+      <section class="card"><h3>Users</h3><div class="table-wrap"><table id="user-table"><thead><tr><th>Name</th><th>E-mail</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div></section>
+      <section class="card">
+        <h3>Bucket templates</h3>
+        <form id="form-template" novalidate class="row wrap">
+          <label>Name <input name="name" required maxlength="40"></label>
+          <label>Suggested budget <input name="suggestedLimit" type="number" min="0" step="0.01" required></label>
+          <button class="primary" type="submit">Add</button>
+        </form>
+        <ul id="template-list" class="plain"></ul>
+      </section>
+    </div>
+  </main>
+
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/buckets.js"></script>
+  <script src="js/transactions.js"></script>
+  <script src="js/insights.js"></script>
+  <script src="js/admin.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

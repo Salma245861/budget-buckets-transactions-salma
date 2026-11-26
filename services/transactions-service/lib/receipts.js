@@ -6,8 +6,9 @@
 //   1. Size cap: the browser gets a pre-signed POST form whose policy says
 //      "1 byte to 5 MB, and exactly this Content-Type". S3 itself refuses anything else,
 //      so a huge file never reaches our storage (EntityTooLarge / AccessDenied).
-//   2. Real type check: after the upload, the service reads the file's first bytes and checks
-//      they really are a JPEG, PNG or PDF. A program renamed to photo.jpg is deleted and refused.
+//   2. Real type check: the upload goes to a waiting spot (<key>.pending). The service reads the
+//      file's first bytes and checks they really are a JPEG, PNG or PDF. Only then is it moved to
+//      the real spot. A program renamed to photo.jpg is deleted, and an existing receipt is kept.
 const URL_TTL_SEC = 300;
 const MAX_BYTES = 5 * 1024 * 1024;
 const TYPES = ['image/jpeg', 'image/png', 'application/pdf'];
@@ -27,6 +28,18 @@ function getClients() {
 
 const enabled = () => Boolean(process.env.RECEIPTS_BUCKET);
 const keyFor = (userId, txnId) => `receipts/${userId}/${txnId}`;
+// New uploads land here first, so a rejected file never replaces a good receipt
+const pendingKeyFor = (userId, txnId) => `${keyFor(userId, txnId)}.pending`;
+
+// A checked upload is moved from the waiting spot to the real spot
+async function promote(pendingKey, finalKey) {
+  const { CopyObjectCommand } = require('@aws-sdk/client-s3');
+  const Bucket = process.env.RECEIPTS_BUCKET;
+  await getClients().s3.send(new CopyObjectCommand({
+    Bucket, Key: finalKey, CopySource: `${Bucket}/${pendingKey.split('/').map(encodeURIComponent).join('/')}`
+  }));
+  await removeObject(pendingKey);
+}
 
 // A pre-signed POST form: S3 enforces the size range and the content type itself.
 async function uploadForm(key, contentType) {
@@ -76,4 +89,4 @@ async function removeObject(key) {
   await getClients().s3.send(new DeleteObjectCommand({ Bucket: process.env.RECEIPTS_BUCKET, Key: key }));
 }
 
-module.exports = { enabled, keyFor, uploadForm, sniffType, readStart, downloadUrl, removeObject, URL_TTL_SEC, MAX_BYTES, TYPES };
+module.exports = { enabled, keyFor, pendingKeyFor, promote, uploadForm, sniffType, readStart, downloadUrl, removeObject, URL_TTL_SEC, MAX_BYTES, TYPES };

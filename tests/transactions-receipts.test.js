@@ -51,3 +51,9 @@ test('TX-11 each user\'s receipts live under their own folder in S3', () => {
   assert.equal(receipts.keyFor('user-a', 'txn-1'), 'receipts/user-a/txn-1');
   assert.notEqual(receipts.keyFor('user-a', 'txn-1'), receipts.keyFor('user-b', 'txn-1'));
 });
+
+test('TX-12 new uploads wait in their own spot, so a rejected file cannot replace a good receipt', () => {
+  assert.equal(receipts.pendingKeyFor('user-a', 'txn-1'), 'receipts/user-a/txn-1.pending');
+  assert.notEqual(receipts.pendingKeyFor('user-a', 'txn-1'), receipts.keyFor('user-a', 'txn-1'));
+  assert.ok(receipts.pendingKeyFor('user-a', 'txn-1').startsWith('receipts/user-a/'));
+});
