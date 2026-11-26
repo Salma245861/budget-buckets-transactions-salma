@@ -32,3 +32,6 @@ The first commit in this repository is my service as it stood in the team's **AI
 |---|---|---|
 | 24 Nov 2026 | Set up Docker, Floci and the AWS CLI, deployed the whole app on Floci (8/8 steps), smoke test 11/11 passed | |
 | 24 Nov 2026 | Found and fixed a bug: the deploy script's Floci health check failed on Windows Git Bash | `salma` branch, team repo |
+| 26 Nov 2026 | Added my service and the page layout to my `salma` branch, and opened [pull request #1](https://github.com/SagedEhab/personal-budget-buckets/pull/1) | `e6596bf` (team repo) |
+| 26 Nov 2026 | Re-applied the Windows health-check fix after the team repo was reorganised | `c60bba2` (team repo) |
+| 26 Nov 2026 | Wrote 7 unit tests for the currency converter (`tests/transactions-fx.test.js`): same currency, USD to EGP, rounding, caching, unsupported currency, API down, bad API answer. 7/7 pass | `646efb8` (team repo) |
