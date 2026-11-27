@@ -18,13 +18,17 @@ Users log income and expenses (amount, bucket, payment method, date). Amounts in
 | 4 | Delete a transaction (and its receipt) | `DELETE /api/transactions/:id` |
 | 5 | Upload and download receipts with short-lived private S3 links | `POST`/`GET /api/transactions/:id/receipt` |
 | 6 | Preview an exchange rate (external API) | `GET /api/transactions/fx-rate` |
+| 7 | Download my data / delete my data (Egypt PDPL) | `GET /api/transactions/me/export`, `DELETE /api/transactions/me` |
+| 8 | Admin analytics from the Neon audit trail (counts only) | `GET /api/transactions/admin/audit-stats` |
 
-**AWS services used (on Floci):** Lambda, DynamoDB (`PBTransactions`), S3 (private receipts bucket), Secrets Manager, CloudWatch Logs, IAM.
+**AWS services used (on Floci):** Lambda, DynamoDB (`PBTransactions`), S3 (private receipts bucket), KMS (my own key `alias/pb-transactions`), Secrets Manager, CloudWatch Logs, IAM.
+
+**External services:** open.er-api.com (exchange rates) and Neon Postgres (audit trail database, Frankfurt).
 
 ## Where this code came from
 
 The first commit in this repository is my service as it stood in the team's **AI-assisted draft**, which Saged committed to the team repository on 22 Nov 2026 (declared in the report, Appendix A).
-**Every later commit here is my own work** on this service: fixes, tests, security features and evidence. The same changes are made on my `salma` branch in the team repository.
+The same changes are made on my `salma` branch in the team repository.
 
 ## My work log
 
