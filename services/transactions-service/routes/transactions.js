@@ -17,6 +17,7 @@ const fx = require('../lib/fx');
 const receipts = require('../lib/receipts');
 const privacy = require('../lib/privacy');
 const idempotency = require('../lib/idempotency');
+const audit = require('../lib/audit');
 
 const CURRENCIES = ['EGP', 'USD', 'EUR', 'GBP', 'SAR', 'AED', 'KWD'];
 const PAYMENT_METHODS = ['cash', 'card', 'bank_transfer', 'mobile_wallet'];
@@ -126,6 +127,24 @@ function createTransactionRoutes(logger) {
     });
   }));
 
+  // ----- admin analytics from the Neon audit trail (enhancement 1b, Salma), counts only -----
+  router.get('/admin/audit-stats', requireRole('admin'), wrap(async (req, res) => {
+    const days = queryInt(req.query.days, 'days', { min: 1, max: 90, def: 7 });
+    if (!audit.enabled()) {
+      const e = errors.unavailable('AUDIT_NOT_CONFIGURED', 'The audit database (Neon) is not configured in this environment.');
+      e.status = 501;
+      throw e;
+    }
+    let result;
+    try {
+      result = await audit.stats(days);
+    } catch (error) {
+      logger.error('DEPENDENCY_ERROR', { requestId: req.requestId, target: 'neon', reason: error.message.slice(0, 120) });
+      throw errors.unavailable('DEPENDENCY_ERROR', 'The audit database is not available right now.');
+    }
+    res.status(200).json({ source: 'neon', ...result });
+  }));
+
   // ----- external API preview -----
   router.get('/fx-rate', wrap(async (req, res) => {
     const from = queryEnum(String(req.query.from || '').toUpperCase(), 'from', CURRENCIES);
@@ -216,6 +235,7 @@ function createTransactionRoutes(logger) {
       throw errors.conflict('TRANSACTION_EXISTS', 'This transaction was already saved.');
     }
     logger.info('TRANSACTION_CREATED', { requestId: req.requestId, userId: req.user.id, transactionId: id, type: txn.type, foreign: currency !== txn.baseCurrency });
+    await audit.record(logger, req.requestId, req.user.id, 'CREATE', txn);
 
     const budget = txn.bucketId ? await evaluate(req, txn.bucketId, date) : null;
     res.status(201).json({ transaction: publicTxn(txn), budget: budget ? budget.budget : null, alertRaised: budget ? budget.alertRaised : false });
@@ -270,10 +290,14 @@ function createTransactionRoutes(logger) {
       }
     }
     for (const t of items) await store.remove(t.pk, t.sk);
+    const auditRowsDeleted = await audit.eraseUser(logger, req.requestId, req.user.id);
     logger.info('PRIVACY_DELETE', {
-      requestId: req.requestId, userId: req.user.id, transactions: items.length, receiptsDeleted, receiptsFailed
+      requestId: req.requestId, userId: req.user.id, transactions: items.length, receiptsDeleted, receiptsFailed, auditRowsDeleted
     });
-    res.status(200).json({ service: 'transactions', deletedTransactions: items.length, deletedReceipts: receiptsDeleted, receiptErrors: receiptsFailed });
+    res.status(200).json({
+      service: 'transactions', deletedTransactions: items.length, deletedReceipts: receiptsDeleted, receiptErrors: receiptsFailed,
+      deletedAuditRows: auditRowsDeleted
+    });
   }));
 
   router.get('/:id', wrap(async (req, res) => {
@@ -312,6 +336,7 @@ function createTransactionRoutes(logger) {
       updatedAt: new Date().toISOString()
     });
     logger.info('TRANSACTION_UPDATED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id, fields: Object.keys(changes) });
+    await audit.record(logger, req.requestId, req.user.id, 'UPDATE', updated);
     const budget = updated.bucketId ? await evaluate(req, updated.bucketId, updated.date) : null;
     res.status(200).json({ transaction: publicTxn(updated), budget: budget ? budget.budget : null });
   }));
@@ -326,6 +351,7 @@ function createTransactionRoutes(logger) {
     }
     await store.remove(txn.pk, txn.sk);
     logger.info('TRANSACTION_DELETED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id });
+    await audit.record(logger, req.requestId, req.user.id, 'DELETE', txn);
     res.status(204).end();
   }));
 
@@ -385,6 +411,7 @@ function createTransactionRoutes(logger) {
       receiptKey: key, receiptContentType: realType, receiptPendingType: null, updatedAt: new Date().toISOString()
     });
     logger.info('RECEIPT_ATTACHED', { requestId: req.requestId, userId: req.user.id, transactionId: txn.id, type: realType });
+    await audit.record(logger, req.requestId, req.user.id, 'RECEIPT_ATTACH', updated);
     res.status(200).json(publicTxn(updated));
   }));
 
